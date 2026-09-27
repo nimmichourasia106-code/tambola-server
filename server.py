@@ -207,6 +207,8 @@ print("====================================")
 print("       TAMBOLA SERVER")
 print("====================================")
 print("Server starting on port 8000...")
-print("====================================")
+print("==================================== Handler).serve_forever()
+import os
 
-ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+port = int(os.environ.get("PORT", 8000))
+ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
