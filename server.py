@@ -17,6 +17,7 @@ def new_code():
 
 def response(handler, data, status=200):
     raw = json.dumps(data).encode("utf-8")
+
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Access-Control-Allow-Origin", "*")
@@ -24,6 +25,7 @@ def response(handler, data, status=200):
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
     handler.send_header("Content-Length", str(len(raw)))
     handler.end_headers()
+
     handler.wfile.write(raw)
 
 
@@ -170,7 +172,74 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # ADMIN AUTHENTICATION
+        # DISPLAY NEXT
+        # Works whether Admin is connected or not.
+        # If Admin selected a number, use it.
+        # Otherwise choose a random available number.
+        if path == "/api/display/next":
+
+            code = str(
+                data.get("code", "")
+            ).strip()
+
+            if code not in games:
+                response(
+                    self,
+                    {"error": "Invalid code"},
+                    404
+                )
+                return
+
+            game = games[code]
+
+            available = [
+                n
+                for n in range(1, 91)
+                if n not in game["called"]
+            ]
+
+            if not available:
+                response(
+                    self,
+                    {
+                        "error":
+                        "All 90 numbers called"
+                    },
+                    400
+                )
+                return
+
+            if game["selected"] is not None:
+                number = game["selected"]
+            else:
+                number = random.choice(available)
+
+            if number in game["called"]:
+                response(
+                    self,
+                    {
+                        "error":
+                        "Number already called"
+                    },
+                    400
+                )
+                return
+
+            game["called"].append(number)
+            game["selected"] = None
+
+            response(
+                self,
+                {
+                    "number": number,
+                    "state": state(game),
+                    "called": game["called"]
+                }
+            )
+            return
+
+        # Everything below this point requires Admin authentication.
+
         code = str(
             data.get("code", "")
         ).strip()
@@ -239,44 +308,32 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # NEXT NUMBER
+        # ADMIN NEXT
         if path in (
             "/api/admin/next",
             "/api/next"
         ):
-            if game["selected"] is not None:
-                number = game["selected"]
+            available = [
+                n
+                for n in range(1, 91)
+                if n not in game["called"]
+            ]
 
-            else:
-                available = [
-                    n
-                    for n in range(1, 91)
-                    if n not in game["called"]
-                ]
-
-                if not available:
-                    response(
-                        self,
-                        {
-                            "error":
-                            "All 90 numbers called"
-                        },
-                        400
-                    )
-                    return
-
-                number = random.choice(available)
-
-            if number in game["called"]:
+            if not available:
                 response(
                     self,
                     {
                         "error":
-                        "Number already called"
+                        "All 90 numbers called"
                     },
                     400
                 )
                 return
+
+            if game["selected"] is not None:
+                number = game["selected"]
+            else:
+                number = random.choice(available)
 
             game["called"].append(number)
             game["selected"] = None
@@ -334,10 +391,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 print("====================================")
-print("       TAMBOLA SERVER")
+print("          TAMBOLA SERVER")
 print("====================================")
 print("Server starting...")
-print("====================================")
 
 port = int(
     os.environ.get("PORT", 8000)
