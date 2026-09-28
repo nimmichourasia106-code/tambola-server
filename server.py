@@ -44,8 +44,56 @@ def state(game):
     return {
         "called": game["called"],
         "selected": game["selected"],
+        "fixed": game["fixed"],
         "admin_connected": game["admin_token"] is not None
     }
+
+
+def choose_next(game):
+    position = len(game["called"]) + 1
+
+    # A fixed future position has highest priority.
+    if str(position) in game["fixed"]:
+        number = game["fixed"][str(position)]
+
+        if number in game["called"]:
+            raise ValueError(
+                f"Fixed number {number} for call #{position} "
+                f"has already been called"
+            )
+
+        return number
+
+    # Otherwise use a number selected from the 1-90 board.
+    if game["selected"] is not None:
+        number = game["selected"]
+
+        if number in game["called"]:
+            raise ValueError("Selected number already called")
+
+        return number
+
+    available = [
+        n for n in range(1, 91)
+        if n not in game["called"]
+    ]
+
+    if not available:
+        raise ValueError("All 90 numbers called")
+
+    return random.choice(available)
+
+
+def do_next(game):
+    if len(game["called"]) >= 90:
+        raise ValueError("All 90 numbers called")
+
+    number = choose_next(game)
+
+    game["called"].append(number)
+    game["selected"] = None
+
+    return number
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -111,14 +159,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # DISPLAY CREATES A 6-DIGIT CODE
+        # DISPLAY CREATES A GAME
         if path == "/api/display/create":
             code = new_code()
 
             games[code] = {
                 "called": [],
                 "selected": None,
-                "admin_token": None
+                "admin_token": None,
+                "fixed": {}
             }
 
             response(
@@ -127,12 +176,13 @@ class Handler(BaseHTTPRequestHandler):
                     "code": code,
                     "called": [],
                     "selected": None,
+                    "fixed": {},
                     "admin_connected": False
                 }
             )
             return
 
-        # ADMIN JOINS USING THE DISPLAY CODE
+        # ADMIN JOINS
         if path == "/api/admin/join":
             code = str(
                 data.get("code", "")
@@ -160,7 +210,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             token = secrets.token_urlsafe(24)
-
             game["admin_token"] = token
 
             response(
@@ -173,9 +222,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # DISPLAY NEXT
-        # Works whether Admin is connected or not.
-        # If Admin selected a number, use it.
-        # Otherwise choose a random available number.
         if path == "/api/display/next":
 
             code = str(
@@ -192,54 +238,28 @@ class Handler(BaseHTTPRequestHandler):
 
             game = games[code]
 
-            available = [
-                n
-                for n in range(1, 91)
-                if n not in game["called"]
-            ]
+            try:
+                number = do_next(game)
 
-            if not available:
                 response(
                     self,
                     {
-                        "error":
-                        "All 90 numbers called"
-                    },
-                    400
+                        "number": number,
+                        "state": state(game),
+                        "called": game["called"]
+                    }
                 )
-                return
 
-            if game["selected"] is not None:
-                number = game["selected"]
-            else:
-                number = random.choice(available)
-
-            if number in game["called"]:
+            except ValueError as e:
                 response(
                     self,
-                    {
-                        "error":
-                        "Number already called"
-                    },
+                    {"error": str(e)},
                     400
                 )
-                return
 
-            game["called"].append(number)
-            game["selected"] = None
-
-            response(
-                self,
-                {
-                    "number": number,
-                    "state": state(game),
-                    "called": game["called"]
-                }
-            )
             return
 
-        # Everything below this point requires Admin authentication.
-
+        # EVERYTHING BELOW REQUIRES ADMIN AUTH
         code = str(
             data.get("code", "")
         ).strip()
@@ -266,11 +286,9 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # ADMIN SELECTS A NUMBER
-        if path in (
-            "/api/admin/select",
-            "/api/select"
-        ):
+        # SELECT NEXT NUMBER FROM THE 1-90 BOARD
+        if path == "/api/admin/select":
+
             try:
                 number = int(
                     data.get("number", 0)
@@ -297,6 +315,22 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            # If the next position is fixed, the fixed
+            # position takes priority over board selection.
+            position = len(game["called"]) + 1
+
+            if str(position) in game["fixed"]:
+                response(
+                    self,
+                    {
+                        "error":
+                        f"Call #{position} is fixed to "
+                        f"{game['fixed'][str(position)]}"
+                    },
+                    400
+                )
+                return
+
             game["selected"] = number
 
             response(
@@ -308,53 +342,142 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # ADMIN NEXT
-        if path in (
-            "/api/admin/next",
-            "/api/next"
-        ):
-            available = [
-                n
-                for n in range(1, 91)
-                if n not in game["called"]
-            ]
+        # FIX A FUTURE POSITION
+        if path == "/api/admin/fix":
 
-            if not available:
+            try:
+                position = int(
+                    data.get("position", 0)
+                )
+                number = int(
+                    data.get("number", 0)
+                )
+            except Exception:
+                position = 0
+                number = 0
+
+            next_position = len(game["called"]) + 1
+
+            if position < 1 or position > 90:
                 response(
                     self,
                     {
                         "error":
-                        "All 90 numbers called"
+                        "Position must be 1-90"
                     },
                     400
                 )
                 return
 
-            if game["selected"] is not None:
-                number = game["selected"]
-            else:
-                number = random.choice(available)
+            if number < 1 or number > 90:
+                response(
+                    self,
+                    {
+                        "error":
+                        "Number must be 1-90"
+                    },
+                    400
+                )
+                return
 
-            game["called"].append(number)
-            game["selected"] = None
+            if position < next_position:
+                response(
+                    self,
+                    {
+                        "error":
+                        "That call position has already passed"
+                    },
+                    400
+                )
+                return
+
+            if number in game["called"]:
+                response(
+                    self,
+                    {
+                        "error":
+                        "That number has already been called"
+                    },
+                    400
+                )
+                return
+
+            # Prevent the same number being fixed at two
+            # different future positions.
+            for p, n in game["fixed"].items():
+                if p != str(position) and n == number:
+                    response(
+                        self,
+                        {
+                            "error":
+                            "That number is already fixed "
+                            "to another position"
+                        },
+                        400
+                    )
+                    return
+
+            game["fixed"][str(position)] = number
+
+            # A board selection cannot override a fixed
+            # position.
+            if game["selected"] == number:
+                game["selected"] = None
 
             response(
                 self,
                 {
-                    "number": number,
-                    "state": state(game),
-                    "called": game["called"]
+                    "ok": True,
+                    "state": state(game)
                 }
             )
             return
 
-        # UNDO
-        if path in (
-            "/api/admin/undo",
-            "/api/undo"
-        ):
+        # CLEAR ALL FUTURE FIXED CALLS
+        if path == "/api/admin/clear_schedule":
+
+            game["fixed"] = {}
+
+            response(
+                self,
+                {
+                    "ok": True,
+                    "state": state(game)
+                }
+            )
+            return
+
+        # ADMIN NEXT
+        if path == "/api/admin/next":
+
+            try:
+                number = do_next(game)
+
+                response(
+                    self,
+                    {
+                        "number": number,
+                        "state": state(game),
+                        "called": game["called"]
+                    }
+                )
+
+            except ValueError as e:
+                response(
+                    self,
+                    {"error": str(e)},
+                    400
+                )
+
+            return
+
+        # ADMIN UNDO
+        if path == "/api/admin/undo":
+
             if game["called"]:
                 game["called"].pop()
+
+            game["selected"] = None
 
             response(
                 self,
@@ -366,14 +489,14 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # RESET
-        if path in (
-            "/api/admin/reset",
-            "/api/reset"
-        ):
+        # ADMIN RESET
+        if path == "/api/admin/reset":
+
             game["called"] = []
             game["selected"] = None
 
+            # Fixed calls intentionally remain.
+            # They can be removed with CLEAR ALL FIXED CALLS.
             response(
                 self,
                 {
@@ -403,3 +526,4 @@ ThreadingHTTPServer(
     ("0.0.0.0", port),
     Handler
 ).serve_forever()
+        
